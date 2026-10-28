@@ -1,0 +1,75 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build
+        shell: cmd
+        run: build.bat
+
+      - name: Assemble package folder
+        shell: bash
+        run: |
+          mkdir -p package/HP5PracticeTool
+          cp HP5PracticeTool.exe LICENSE README.txt package/HP5PracticeTool/
+          cp -r presets package/HP5PracticeTool/
+          rm -f package/HP5PracticeTool/presets/.gitkeep
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: HP5PracticeTool
+          path: package/
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      TAG: build-${{ github.run_number }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: HP5PracticeTool
+          path: package
+
+      - name: Zip and checksum
+        run: |
+          mkdir -p package/HP5PracticeTool/presets
+          (cd package && zip -r ../HP5PracticeTool.zip HP5PracticeTool)
+          (cd package/HP5PracticeTool && find . -type f | sed 's|^\./||' | sort | xargs -r -d '\n' sha256sum) > SHA256SUMS
+          sha256sum HP5PracticeTool.zip >> SHA256SUMS
+          cat SHA256SUMS
+
+      # Signed provenance for the zip, the exe and every preset file
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-checksums: SHA256SUMS
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" HP5PracticeTool.zip SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "HP5PracticeTool $TAG" \
+            --notes "Built from commit $GITHUB_SHA by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+
+          Verify a downloaded file (the zip, or the exe / a preset file from inside it):
+          \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`"
